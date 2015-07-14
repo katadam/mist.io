@@ -3882,7 +3882,7 @@ def create_dns_a_record(user, domain_name, ip_addr):
             conn = get_dns_driver(provider)(*creds)
             zones = conn.list_zones()
         except InvalidCredsError:
-            log.error("Invalid creds for DNS provider %s.", provider)
+            raise MistError ("Invalid creds for DNS provider %s.", provider)
             continue
         except Exception as exc:
             log.error("Error listing zones for DNS provider %s: %r",
@@ -3936,85 +3936,6 @@ def create_dns_a_record(user, domain_name, ip_addr):
     log.info(msg + " succeeded.")
     return record
 
-def find_zone(user, record_name):
-    """ Returns the DNS zone in which a record exists and the backend/cloud id which manages the zone"""
-    
-    # split record_name in dot separated parts for FQDN record_name
-    parts = [part for part in record_name.split('.') if part]
-    # find all possible domains for this domain name, longest first
-    all_domains = {}
-    for i in range(1, len(parts) - 1):
-        host = '.'.join(parts[:i])
-        domain = '.'.join(parts[i:]) + '.'
-        all_domains[domain] = host
-    if not all_domains:
-        raise MistError("Couldn't extract a valid domain from '%s'."
-                        % record_name)
-    
-    # iterate over all backends that can also be used as DNS providers
-    providers = {}
-    for backend in user.backends.values():
-        if backend.provider.startswith('ec2_'):
-            provider = DnsProvider.ROUTE53
-            creds = backend.apikey, backend.apisecret
-            backend_id = backend.get_id()
-        #TODO: add support for more providers
-        #elif backend.provider == Provider.LINODE:
-        #    pass
-        #elif backend.provider == Provider.RACKSPACE:
-        #    pass
-        else:
-            # no DNS support for this provider, skip
-            continue    
-        if (provider, creds, backend_id) in providers:
-            # we have already checked this provider with these creds and backend_id skip
-            continue
-        
-        try:
-            conn = get_dns_driver(provider)(*creds)
-            zones = conn.list_zones()
-        except InvalidCredsError:
-            log.error("Invalid creds for DNS provider %s.", provider)
-            continue
-        except Exception as exc:
-            log.error("Error listing zones for DNS provider %s: %r",
-                      provider, exc)
-            continue
-
-        # for each possible domain, starting with the longest match
-        best_zone = None
-        for domain in all_domains:
-            for zone in zones:
-                if zone.domain == domain:
-                    log.info("Found zone '%s' in provider '%s'.",
-                             domain, provider)
-                    best_zone = zone
-                    break
-            if best_zone:
-                break
-    
-        # add provider/creds combination to checked list, in case multiple
-        # backends for same provider with same creds exist
-        providers[(provider, creds, backend_id)] = best_zone
-     
-    best = None
-    for provider, creds, backend_id in providers:
-        zone = providers[(provider, creds, backend_id)]
-        if zone is None:
-            continue
-        if best is None or len(zone.domain) > len(best[2].domain):
-            best = provider, creds, backend_id, zone
-    
-    if not best:
-        raise MistError("No DNS zone matches specified domain name.")
-    
-    provider, creds, backend_id, zone = best
-    name = all_domains[zone.domain]
-    log.info("Will use name %s and zone %s in provider %s.",
-             name, zone.domain, provider)
-    
-    return backend_id, zone.domain
-
 def  list_zones(user, backend_id):
     
     """list the DNS zones managed by this backend/cloud""" 
@@ -4024,7 +3945,7 @@ def  list_zones(user, backend_id):
     
     backend = user.backends[backend_id]
     
-    #check if provider has DNS support
+    #check if provider for this backend_id has DNS support
     if backend.provider.startswith('ec2_'):
         provider = DnsProvider.ROUTE53
         creds = backend.apikey, backend.apisecret
@@ -4036,23 +3957,20 @@ def  list_zones(user, backend_id):
         #    pass
     else:
         #no DNS support for this provider, skip
-        msg = ("No DNS support for this provider")
+        raise MistError ("No DNS support for this provider %s." % backend.provider)
+        
+    
     msg = ("Listing zones for user %s in provider %s" %(user,  backend.provider))
     
     try:
         conn = get_dns_driver(provider)(*creds)
         zones = conn.list_zones()
     except InvalidCredsError:
-        log.error("Invalid creds for DNS provider %s.", provider)
+        raise MistError("Invalid creds for DNS provider %s.", provider)
     except Exception as exc:
-        log.error("Error listing zones for DNS provider %s: %r",
-        provider, exc)
-    log.info(msg + " succeeded.")    
-    
-    if not zones:
-        raise MistError("No DNS zone matches for this backend")
+        raise MistError(msg + "failed: %r" % repr(exc))
         
-        
+    log.info(msg + " succeeded.")   
     return zones
 
 def list_records(user, backend_id, zone_name):
@@ -4067,25 +3985,25 @@ def list_records(user, backend_id, zone_name):
     try:
         zones = list_zones(user, backend_id)
     except Exception as exc:
-        log.error("Error listing zones for DNS provider %s: %r",
-        backend.provider, exc)
+        raise MistError ("Error listing zones for DNS provider %s" % backend.provider)
     
-    if zones:
-        for zone in zones:
-           if zone.domain == zone_name:
-               z = zone.domain
-               break
+    
+    z = None
+    for zone in zones:
+        if zone.domain == zone_name:
+            z = zone
+            break
             
     if z is None:
-         raise MistError("Zone is not managed by given backend/cloud or does not ")
+        raise MistError("Zone is not managed by given backend/cloud or does not exist")
     
     msg = ("Listing records for zone_name %s in provider %s" % (zone_name, backend.provider))
     
     try:    
         z.list_records() 
     except Exception as exc:
-        log.error("Error listing records for zone %s: %r",
-        zone_name, exc)
+        raise MistError(msg + " failed: %r" % repr(exc))
+
     log.info(msg + " succeeded.")
     
     return records    
@@ -4096,24 +4014,29 @@ def delete_record(user, backend_id, zone_name, record_type,record_name):
 
     if backend_id not in user.backends:
         raise BackendNotFoundError(backend_id)
+    
+    backend = user.backends[backend_id]
         
     try:
         records = list_records(user, backend_id, zone_name)
     except Exception as exc:
-        log.error("Error listing records for zone %s in DNS provider %s: %r",
-        zone_name, backend.provider, exc)   
+        raise MistError("Error listing records for zone %s in DNS provider %s."% (zone_name, backend.provider))   
     
-    if records:
-        best_record = None
-        for record in all_records:
-            if record.name == record_name and record.type == record_type:
-                best_record = record
-                break
+    best_record = None
+    for record in records:
+        if record.name == record_name and record.type == record_type:
+            best_record = record
+            break
 
     if best_record is None:
        raise MistError("Record to delete is not found in the given zone")
-                
-        
-    zone_name.delete_record(best_record)
     
+    msg = ("Deleting record %s in zone %s" % (record_name, zone_name))            
+    
+    try     
+       zone_name.delete_record(best_record)
+    except Exception as exc:
+        raise MistError("Error deleting record %s for zone %s" % (record_name, zone_name))
+    
+    log.info(msg + " succeeded.")
     return None 
