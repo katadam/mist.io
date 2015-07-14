@@ -1,3 +1,5 @@
+#import logging
+#logging.basicConfig()
 import os
 import shutil
 import random
@@ -279,8 +281,6 @@ def add_backend_v_2(user, title, provider, params):
         backend_id, backend = _add_backend_libvirt(user, title, provider, params)
     elif provider == 'hostvirtual':
         backend_id, backend = _add_backend_hostvirtual(title, provider, params)
-    elif provider == 'vultr':
-        backend_id, backend = _add_backend_vultr(title, provider, params)
     elif provider == 'vsphere':
         backend_id, backend = _add_backend_vsphere(title, provider, params)
     else:
@@ -735,7 +735,6 @@ def _add_backend_docker(title, provider, params):
 
     return backend_id, backend
 
-
 def _add_backend_libvirt(user, title, provider, params):
     machine_hostname = params.get('machine_hostname', '')
     if not machine_hostname:
@@ -851,22 +850,6 @@ def _add_backend_openstack(title, provider, params):
 
 
 def _add_backend_hostvirtual(title, provider, params):
-    api_key = params.get('api_key', '')
-    if not api_key:
-        raise RequiredParameterMissingError('api_key')
-
-    backend = model.Backend()
-    backend.title = title
-    backend.provider = provider
-    backend.apikey = api_key
-    backend.apisecret = api_key
-    backend.enabled = True
-    backend_id = backend.get_id()
-
-    return backend_id, backend
-
-
-def _add_backend_vultr(title, provider, params):
     api_key = params.get('api_key', '')
     if not api_key:
         raise RequiredParameterMissingError('api_key')
@@ -1262,7 +1245,7 @@ def connect_provider(backend):
     elif backend.provider == Provider.HPCLOUD:
         conn = driver(backend.apikey, backend.apisecret, backend.tenant_name,
                       region=backend.region)
-    elif backend.provider in [Provider.LINODE, Provider.HOSTVIRTUAL, Provider.VULTR]:
+    elif backend.provider in [Provider.LINODE, Provider.HOSTVIRTUAL]:
         conn = driver(backend.apisecret)
     elif backend.provider == Provider.GCE:
         conn = driver(backend.apikey, backend.apisecret, project=backend.tenant_name)
@@ -1336,7 +1319,7 @@ def get_machine_actions(machine_from_api, conn, extra):
     if conn.type in (Provider.RACKSPACE_FIRST_GEN, Provider.LINODE,
                      Provider.NEPHOSCALE, Provider.SOFTLAYER,
                      Provider.DIGITAL_OCEAN, Provider.DOCKER, Provider.AZURE,
-                     Provider.VCLOUD, Provider.INDONESIAN_VCLOUD, Provider.LIBVIRT, Provider.HOSTVIRTUAL, Provider.VSPHERE, Provider.VULTR):
+                     Provider.VCLOUD, Provider.INDONESIAN_VCLOUD, Provider.LIBVIRT, Provider.HOSTVIRTUAL, Provider.VSPHERE):
         can_tag = False
 
     # for other states
@@ -1482,15 +1465,12 @@ def list_machines(user, backend_id):
                         m.extra['machineType'] = m.extra.get('machineType').split('/')[-1]
                 except:
                     pass
+
         for k in m.extra.keys():
             try:
                 json.dumps(m.extra[k])
             except TypeError:
                 m.extra[k] = str(m.extra[k])
-
-        if m.driver.type is Provider.AZURE:
-            if m.extra.get('endpoints'):
-                m.extra['endpoints'] = json.dumps(m.extra.get('endpoints', {}))
 
         if m.driver.type == 'bare_metal':
             can_reboot = False
@@ -1535,7 +1515,7 @@ def create_machine(user, backend_id, key_id, machine_name, location_id,
                    size_name, location_name, ips, monitoring, networks=[],
                    docker_env=[], docker_command=None, ssh_port=22,
                    script_id='', script_params='', job_id=None, docker_port_bindings={},
-                   docker_exposed_ports={}, azure_port_bindings='', hostname='', plugins=None):
+                   docker_exposed_ports={}, hostname='', plugins=None):
 
     """Creates a new virtual machine on the specified backend.
 
@@ -1643,7 +1623,7 @@ def create_machine(user, backend_id, key_id, machine_name, location_id,
     elif conn.type == Provider.AZURE:
         node = _create_machine_azure(conn, key_id, private_key,
                                              public_key, machine_name,
-                                             image, size, location, cloud_service_name=None, azure_port_bindings=azure_port_bindings)
+                                             image, size, location, cloud_service_name=None)
     elif conn.type in [Provider.VCLOUD, Provider.INDONESIAN_VCLOUD]:
         node = _create_machine_vcloud(conn, machine_name, image, size, public_key, networks)
     elif conn.type is Provider.LINODE and private_key:
@@ -1652,9 +1632,6 @@ def create_machine(user, backend_id, key_id, machine_name, location_id,
                                       location)
     elif conn.type == Provider.HOSTVIRTUAL:
         node = _create_machine_hostvirtual(conn, public_key, machine_name, image,
-                                         size, location)
-    elif conn.type == Provider.VULTR:
-        node = _create_machine_vultr(conn, public_key, machine_name, image,
                                          size, location)
     else:
         raise BadRequestError("Provider unknown.")
@@ -2129,74 +2106,9 @@ def _create_machine_hostvirtual(conn, public_key, machine_name, image, size, loc
 
     return node
 
-def _create_machine_vultr(conn, public_key, machine_name, image, size, location):
-    """Create a machine in Vultr.
-
-    Here there is no checking done, all parameters are expected to be
-    sanitized by create_machine.
-
-    """
-    key = public_key.replace('\n', '')
-
-    auth = NodeAuthSSHKey(pubkey=key)
-
-    try:
-        node = conn.create_node(
-            name=machine_name,
-            image=image,
-            size=size,
-            auth=auth,
-            location=location
-        )
-    except Exception as e:
-        raise MachineCreationError("Vultr, got exception %s" % e, e)
-
-    return node
-
-
-
-def _create_machine_vultr(conn, public_key, machine_name, image, size, location):
-    """Create a machine in Vultr.
-
-    Here there is no checking done, all parameters are expected to be
-    sanitized by create_machine.
-
-    """
-    key = public_key.replace('\n', '')
-
-    try:
-        server_key = ''
-        keys = conn.ex_list_ssh_keys()
-        for k in keys:
-            if key == k.ssh_key.replace('\n', ''):
-                server_key = k
-                break
-        if not server_key:
-            server_key = conn.ex_create_ssh_key(machine_name, key)
-    except:
-        server_key = conn.ex_create_ssh_key('mistio'+str(random.randint(1,100000)), key)
-
-    try:
-        server_key = server_key.id
-    except:
-        pass
-
-    try:
-        node = conn.create_node(
-            name=machine_name,
-            size=size,
-            image=image,
-            location=location,
-            ssh_key=[server_key]
-        )
-    except Exception as e:
-        raise MachineCreationError("Vultr, got exception %s" % e, e)
-
-    return node
-
 
 def _create_machine_azure(conn, key_name, private_key, public_key,
-                                  machine_name, image, size, location, cloud_service_name, azure_port_bindings):
+                                  machine_name, image, size, location, cloud_service_name):
     """Create a machine Azure.
 
     Here there is no checking done, all parameters are expected to be
@@ -2204,27 +2116,6 @@ def _create_machine_azure(conn, key_name, private_key, public_key,
 
     """
     key = public_key.replace('\n', '')
-
-    port_bindings = []
-    if azure_port_bindings and type(azure_port_bindings) in [str, unicode]:
-    # we receive something like: http tcp 80:80, smtp tcp 25:25, https tcp 443:443
-    # and transform it to [{'name':'http', 'protocol': 'tcp', 'local_port': 80, 'port': 80},
-    # {'name':'smtp', 'protocol': 'tcp', 'local_port': 25, 'port': 25}]
-
-        for port_binding in azure_port_bindings.split(','):
-            try:
-                port_dict = port_binding.split()
-                port_name = port_dict[0]
-                protocol = port_dict[1]
-                ports = port_dict[2]
-                local_port = ports.split(':')[0]
-                port = ports.split(':')[1]
-                binding = {'name': port_name, 'protocol': protocol, 'local_port': local_port, 'port': port}
-                port_bindings.append(binding)
-            except:
-                pass
-
-
     with get_temp_file(private_key) as tmp_key_path:
         try:
             node = conn.create_node(
@@ -2232,8 +2123,7 @@ def _create_machine_azure(conn, key_name, private_key, public_key,
                 size=size,
                 image=image,
                 location=location,
-                ex_cloud_service_name=cloud_service_name,
-                endpoint_ports=port_bindings
+                ex_cloud_service_name=cloud_service_name
             )
         except Exception as e:
             try:
@@ -3897,7 +3787,7 @@ def undeploy_collectd(user, backend_id, machine_id):
 
 def get_deploy_collectd_command_unix(uuid, password, monitor):
     url = "https://github.com/mistio/deploy_collectd/raw/master/local_run.py"
-    cmd = "wget -O - %s | $(command -v sudo) python - %s %s" % (url, uuid, password)
+    cmd = "wget -O - %s | sudo python - %s %s" % (url, uuid, password)
     if monitor != 'monitor1.mist.io':
         cmd += " -m %s" % monitor
     return cmd
@@ -3952,13 +3842,10 @@ def machine_name_validator(provider, name):
                 "and be at least 3 characters long")
     return name
 
-
 def create_dns_a_record(user, domain_name, ip_addr):
     """Will try to create DNS A record for specified domain name and IP addr.
-
     All backends for which there is DNS support will be tried to see if the
     relevant zone exists.
-
     """
 
     # split domain_name in dot separated parts
@@ -4048,3 +3935,185 @@ def create_dns_a_record(user, domain_name, ip_addr):
         raise MistError(msg + " failed: %r" % repr(exc))
     log.info(msg + " succeeded.")
     return record
+
+def find_zone(user, record_name):
+    """ Returns the DNS zone in which a record exists and the backend/cloud id which manages the zone"""
+    
+    # split record_name in dot separated parts for FQDN record_name
+    parts = [part for part in record_name.split('.') if part]
+    # find all possible domains for this domain name, longest first
+    all_domains = {}
+    for i in range(1, len(parts) - 1):
+        host = '.'.join(parts[:i])
+        domain = '.'.join(parts[i:]) + '.'
+        all_domains[domain] = host
+    if not all_domains:
+        raise MistError("Couldn't extract a valid domain from '%s'."
+                        % record_name)
+    
+    # iterate over all backends that can also be used as DNS providers
+    providers = {}
+    for backend in user.backends.values():
+        if backend.provider.startswith('ec2_'):
+            provider = DnsProvider.ROUTE53
+            creds = backend.apikey, backend.apisecret
+            backend_id = backend.get_id()
+        #TODO: add support for more providers
+        #elif backend.provider == Provider.LINODE:
+        #    pass
+        #elif backend.provider == Provider.RACKSPACE:
+        #    pass
+        else:
+            # no DNS support for this provider, skip
+            continue    
+        if (provider, creds, backend_id) in providers:
+            # we have already checked this provider with these creds and backend_id skip
+            continue
+        
+        try:
+            conn = get_dns_driver(provider)(*creds)
+            zones = conn.list_zones()
+        except InvalidCredsError:
+            log.error("Invalid creds for DNS provider %s.", provider)
+            continue
+        except Exception as exc:
+            log.error("Error listing zones for DNS provider %s: %r",
+                      provider, exc)
+            continue
+
+        # for each possible domain, starting with the longest match
+        best_zone = None
+        for domain in all_domains:
+            for zone in zones:
+                if zone.domain == domain:
+                    log.info("Found zone '%s' in provider '%s'.",
+                             domain, provider)
+                    best_zone = zone
+                    break
+            if best_zone:
+                break
+    
+        # add provider/creds combination to checked list, in case multiple
+        # backends for same provider with same creds exist
+        providers[(provider, creds, backend_id)] = best_zone
+     
+    best = None
+    for provider, creds, backend_id in providers:
+        zone = providers[(provider, creds, backend_id)]
+        if zone is None:
+            continue
+        if best is None or len(zone.domain) > len(best[2].domain):
+            best = provider, creds, backend_id, zone
+    
+    if not best:
+        raise MistError("No DNS zone matches specified domain name.")
+    
+    provider, creds, backend_id, zone = best
+    name = all_domains[zone.domain]
+    log.info("Will use name %s and zone %s in provider %s.",
+             name, zone.domain, provider)
+    
+    return backend_id, zone.domain
+
+def  list_zones(user, backend_id):
+    
+    """list the DNS zones managed by this backend/cloud""" 
+    
+    if backend_id not in user.backends:
+        raise BackendNotFoundError(backend_id)
+    
+    backend = user.backends[backend_id]
+    
+    #check if provider has DNS support
+    if backend.provider.startswith('ec2_'):
+        provider = DnsProvider.ROUTE53
+        creds = backend.apikey, backend.apisecret
+        #TODO: add support for more providers
+        #elif backend.provider == Provider.LINODE:
+        #    pass
+        #elif backend.provider == Provider.RACKSPACE:
+        #    pass
+        #    pass
+    else:
+        #no DNS support for this provider, skip
+        msg = ("No DNS support for this provider")
+    msg = ("Listing zones for user %s in provider %s" %(user,  backend.provider))
+    
+    try:
+        conn = get_dns_driver(provider)(*creds)
+        zones = conn.list_zones()
+    except InvalidCredsError:
+        log.error("Invalid creds for DNS provider %s.", provider)
+    except Exception as exc:
+        log.error("Error listing zones for DNS provider %s: %r",
+        provider, exc)
+    log.info(msg + " succeeded.")    
+    
+    if not zones:
+        raise MistError("No DNS zone matches for this backend")
+        
+        
+    return zones
+
+def list_records(user, backend_id, zone_name):
+    
+    """list of DNS records for given zone managed by given backend/cloud"""
+    
+    if backend_id not in user.backends:
+        raise BackendNotFoundError(backend_id)
+    
+    backend = user.backends[backend_id]
+    
+    try:
+        zones = list_zones(user, backend_id)
+    except Exception as exc:
+        log.error("Error listing zones for DNS provider %s: %r",
+        backend.provider, exc)
+    
+    if zones:
+        for zone in zones:
+           if zone.domain == zone_name:
+               z = zone.domain
+               break
+            
+    if z is None:
+         raise MistError("Zone is not managed by given backend/cloud or does not ")
+    
+    msg = ("Listing records for zone_name %s in provider %s" % (zone_name, backend.provider))
+    
+    try:    
+        z.list_records() 
+    except Exception as exc:
+        log.error("Error listing records for zone %s: %r",
+        zone_name, exc)
+    log.info(msg + " succeeded.")
+    
+    return records    
+
+def delete_record(user, backend_id, zone_name, record_type,record_name):
+
+    """deletes the given record for given zone managed by given backend/cloud"""    
+
+    if backend_id not in user.backends:
+        raise BackendNotFoundError(backend_id)
+        
+    try:
+        records = list_records(user, backend_id, zone_name)
+    except Exception as exc:
+        log.error("Error listing records for zone %s in DNS provider %s: %r",
+        zone_name, backend.provider, exc)   
+    
+    if records:
+        best_record = None
+        for record in all_records:
+            if record.name == record_name and record.type == record_type:
+                best_record = record
+                break
+
+    if best_record is None:
+       raise MistError("Record to delete is not found in the given zone")
+                
+        
+    zone_name.delete_record(best_record)
+    
+    return None 
