@@ -4008,15 +4008,43 @@ def list_records(user, backend_id, zone_name):
     
     return records    
 
-def delete_record(user, backend_id, zone_name, record_type,record_name):
-
     """deletes the given record for given zone managed by given backend/cloud"""    
 
     if backend_id not in user.backends:
         raise BackendNotFoundError(backend_id)
     
     backend = user.backends[backend_id]
-        
+    
+    #check if provider for this backend_id has DNS support
+    if backend.provider.startswith('ec2_'):
+        provider = DnsProvider.ROUTE53
+        creds = backend.apikey, backend.apisecret
+        #TODO: add support for more providers
+        #elif backend.provider == Provider.LINODE:
+        #    pass
+        #elif backend.provider == Provider.RACKSPACE:
+        #    pass
+        #    pass
+    else:
+        #no DNS support for this provider, skip
+        raise MistError ("No DNS support for this provider %s." % backend.provider)
+
+  
+    #check if given zone_name is managed by given backend/cloud
+    try:
+        zones = list_zones(user, backend_id)
+    except Exception as exc:
+        raise MistError ("Error listing zones for DNS provider %s" % backend.provider)
+    
+    
+    z = None
+    for zone in zones:
+        if zone.domain == zone_name:
+            z = zone
+            break
+            
+    if z is None:
+        raise MistError("Zone is not managed by given backend/cloud or does not exist")    
     try:
         records = list_records(user, backend_id, zone_name)
     except Exception as exc:
@@ -4040,3 +4068,125 @@ def delete_record(user, backend_id, zone_name, record_type,record_name):
     
     log.info(msg + " succeeded.")
     return None 
+
+def add_record(user, backend_id, zone_name, record_type, record_name, data):
+
+    """creates a dns record and adds it on the record list of the given zone"""    
+
+    if backend_id not in user.backends:
+        raise BackendNotFoundError(backend_id)
+    
+    backend = user.backends[backend_id]
+
+    #check if provider for this backend_id has DNS support
+    if backend.provider.startswith('ec2_'):
+        provider = DnsProvider.ROUTE53
+        creds = backend.apikey, backend.apisecret
+        #TODO: add support for more providers
+        #elif backend.provider == Provider.LINODE:
+        #    pass
+        #elif backend.provider == Provider.RACKSPACE:
+        #    pass
+        #    pass
+    else:
+        #no DNS support for this provider, skip
+        raise MistError ("No DNS support for this provider %s." % backend.provider)
+
+  
+    #check if given zone_name is managed by given backend/cloud
+    try:
+        zones = list_zones(user, backend_id)
+    except Exception as exc:
+        raise MistError ("Error listing zones for DNS provider %s" % backend.provider)
+    
+    
+    z = None
+    for zone in zones:
+        if zone.domain == zone_name:
+            z = zone
+            break
+            
+    if z is None:
+        raise MistError("Zone is not managed by given backend/cloud or does not exist")
+    
+    records = []
+    
+    try:
+        records = list_recors(user, backend_id, z)
+    except Exception as exc:
+        raise MistError("Error listing records in zone %s", zone_name)
+    
+    msg = ("Creating record % for ip_address %s and adding it to the records of zone %" % (record_name, data, z))
+
+    try:
+        record = zone_name.create_record(record_name,  record_type, data)
+    except Exception as exc:
+        raise MistError(msg + " failed: %r" % repr(exc))
+   
+    log.info(msg + " succeeded.")
+    
+    return None
+
+def edit_record(user, backend_id, zone_name, record_type, record_name, data):
+
+    """creates a dns record and adds it on the record list of the given zone"""    
+
+    if backend_id not in user.backends:
+        raise BackendNotFoundError(backend_id)
+    
+    backend = user.backends[backend_id]
+
+    #check if provider for this backend_id has DNS support
+    if backend.provider.startswith('ec2_'):
+        provider = DnsProvider.ROUTE53
+        creds = backend.apikey, backend.apisecret
+        #TODO: add support for more providers
+        #elif backend.provider == Provider.LINODE:
+        #    pass
+        #elif backend.provider == Provider.RACKSPACE:
+        #    pass
+        #    pass
+    else:
+        #no DNS support for this provider, skip
+        raise MistError ("No DNS support for this provider %s." % backend.provider)
+
+  
+    #check if given zone_name is managed by given backend/cloud
+    try:
+        zones = list_zones(user, backend_id)
+    except Exception as exc:
+        raise MistError ("Error listing zones for DNS provider %s" % backend.provider)
+    
+    
+    z = None
+    for zone in zones:
+        if zone.domain == zone_name:
+            z = zone
+            break
+            
+    if z is None:
+        raise MistError("Zone is not managed by given backend/cloud or does not exist")
+    
+    try:
+        records = list_recors(user, backend_id, z)
+    except Exception as exc:
+        raise MistError("Error listing records in zone %s", zone_name)
+    
+    best_record = None
+    for record in records:
+        if record.name == record_name and record.type == record_type:
+            best_record = record
+            break
+
+    if best_record is None:
+       raise MistError("Record to update is not found in the given zone")
+    
+    msg = ("Updating record %s in zone %s" % (record_name, zone_name))            
+    
+    try:    
+       z.update_record(best_record.name, best_record.type, data )
+    except Exception as exc:
+        raise MistError(msg + " failed: %r" % repr(exc))
+    
+    log.info(msg + " succeeded.")
+    return None
