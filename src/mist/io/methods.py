@@ -4033,10 +4033,10 @@ def delete_record(user, backend_id, zone_name, record_type,record_name):
     
     msg = ("Deleting record %s in zone %s" % (record_name, zone_name))            
     
-    try     
+    try:    
        zone_name.delete_record(best_record)
     except Exception as exc:
-        raise MistError("Error deleting record %s for zone %s" % (record_name, zone_name))
+        raise MistError(msg + " failed: %r" % repr(exc))
     
     log.info(msg + " succeeded.")
     return None 
